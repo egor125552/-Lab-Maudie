@@ -456,7 +456,7 @@ let cachedExtended44k: Float32Array | null = null;
  * Unpacks the sparse 10ms MDCT table into a dense [MDCT_NUM_FRAMES x 80] Int8Array
  * so any 10ms frame `f` can be accessed in O(1) time.
  */
-function getDense10msFrameTable(): Int8Array {
+export function getDense10msFrameTable(): Int8Array {
   if (cachedDenseCoeffs) return cachedDenseCoeffs;
 
   const idxBytes = decodeBase64Bytes(MDCT_ACTIVE_INDICES_B64);

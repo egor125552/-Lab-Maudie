@@ -10,8 +10,12 @@ import {
   synthesizeDialupHandshake,
 } from './audio/dialupDsp';
 import { DecodedTrackData, DialupAudioPlayer } from './audio/webAudioPlayer';
-import { DEFAULT_ALGORITHMIC_CONFIG, generateAlgorithmicDialup } from './audio/generator/generator';
-import type { AlgorithmicPlan } from './audio/generator/types';
+import {
+  buildReferenceGraphPlan,
+  getReferenceGraphDenseCoefficients,
+  renderReferenceGraphPlan,
+} from './audio/generator/referenceGraph';
+import type { ReferenceGraphWorkletModel } from './audio/generator/referenceGraphWorklet';
 import { SimpleWaveform } from './components/SimpleWaveform';
 
 function formatTimeSec(sec: number): string {
@@ -22,7 +26,7 @@ function formatTimeSec(sec: number): string {
 }
 
 const EXPORT_NAMES: Record<AudioSourceMode, string> = {
-  algorithmic: 'Математический dial-up.wav',
+  algorithmic: 'Точный dial-up генератор.wav',
   synth_long: 'Dial-up длинное соединение.wav',
   synth: 'Dial-up классика.wav',
   orig1: 'Dial-up эталон чистая линия.wav',
@@ -30,7 +34,7 @@ const EXPORT_NAMES: Record<AudioSourceMode, string> = {
 };
 
 const SOURCE_OPTIONS: { id: AudioSourceMode; label: string }[] = [
-  { id: 'algorithmic', label: 'Математический генератор' },
+  { id: 'algorithmic', label: 'Генератор по модели' },
   { id: 'synth_long', label: 'Долгое соединение (39 сек)' },
   { id: 'synth', label: 'Классика (25 сек)' },
   { id: 'orig1', label: 'Эталон 1 (Чистая линия)' },
@@ -38,9 +42,10 @@ const SOURCE_OPTIONS: { id: AudioSourceMode; label: string }[] = [
 ];
 
 export default function App() {
-  const [sourceMode, setSourceMode] = useState<AudioSourceMode>('synth_long');
+  const [sourceMode, setSourceMode] = useState<AudioSourceMode>('algorithmic');
   const [volume, setVolume] = useState<number>(0.9);
-  const [algorithmicSeed, setAlgorithmicSeed] = useState<number>(DEFAULT_ALGORITHMIC_CONFIG.seed);
+  const [algorithmicSeed, setAlgorithmicSeed] = useState<number>(1);
+  const [algorithmicVariation, setAlgorithmicVariation] = useState<boolean>(false);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playheadSec, setPlayheadSec] = useState<number>(0);
   const [exportSaved, setExportSaved] = useState<boolean>(false);
@@ -64,19 +69,29 @@ export default function App() {
     () => synthesizeDialupHandshake({ ...DEFAULT_CONFIG, extendedMode: false }),
     []
   );
-  const synthesisAlgorithmic = useMemo(
-    () => generateAlgorithmicDialup({ ...DEFAULT_ALGORITHMIC_CONFIG, seed: algorithmicSeed }),
-    [algorithmicSeed]
+  const referenceGraphPlan = useMemo(
+    () =>
+      buildReferenceGraphPlan({
+        seed: algorithmicSeed,
+        variation: algorithmicVariation,
+      }),
+    [algorithmicSeed, algorithmicVariation]
   );
-  const algorithmicPlan = useMemo<AlgorithmicPlan>(
+  const synthesisAlgorithmic = useMemo(
+    () => renderReferenceGraphPlan(referenceGraphPlan),
+    [referenceGraphPlan]
+  );
+  const referenceDenseCoefficients = useMemo(
+    () => getReferenceGraphDenseCoefficients(),
+    []
+  );
+  const referenceGraphModel = useMemo<ReferenceGraphWorkletModel>(
     () => ({
-      sampleRate: synthesisAlgorithmic.sampleRate,
-      durationSec: synthesisAlgorithmic.durationSec,
-      events: synthesisAlgorithmic.events,
-      phases: synthesisAlgorithmic.phases,
-      seed: synthesisAlgorithmic.seed,
+      plan: referenceGraphPlan,
+      denseCoefficients: referenceDenseCoefficients,
+      normalizationGain: synthesisAlgorithmic.normalizationGain,
     }),
-    [synthesisAlgorithmic]
+    [referenceGraphPlan, referenceDenseCoefficients, synthesisAlgorithmic.normalizationGain]
   );
 
   // Preload & decode the two attached MP3 reference recordings for instant comparison
@@ -136,11 +151,11 @@ export default function App() {
     if (!player) return;
     player.setVolume(volume);
     if (sourceMode === 'algorithmic') {
-      player.loadAlgorithmicPlan(algorithmicPlan, activeTrack.samples);
+      player.loadReferenceGraphModel(referenceGraphModel, activeTrack.samples);
     } else {
       player.loadSamples(activeTrack.samples, activeTrack.sampleRate);
     }
-  }, [activeTrack, algorithmicPlan, sourceMode, volume]);
+  }, [activeTrack, referenceGraphModel, sourceMode, volume]);
 
   useEffect(() => {
     return () => {
@@ -193,7 +208,15 @@ export default function App() {
     playerRef.current?.stop(false);
     setIsPlaying(false);
     setPlayheadSec(0);
+    setAlgorithmicVariation(true);
     setAlgorithmicSeed((seed) => seed + 1);
+  }, []);
+
+  const handleExactAlgorithmicConnection = useCallback(() => {
+    playerRef.current?.stop(false);
+    setIsPlaying(false);
+    setPlayheadSec(0);
+    setAlgorithmicVariation(false);
   }, []);
 
   const handleTogglePlay = useCallback(() => {
@@ -250,14 +273,17 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = EXPORT_NAMES[sourceMode];
+    link.download =
+      sourceMode === 'algorithmic' && algorithmicVariation
+        ? 'Новое dial-up соединение по модели.wav'
+        : EXPORT_NAMES[sourceMode];
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     setExportSaved(true);
     setTimeout(() => setExportSaved(false), 2200);
-  }, [activeTrack, sourceMode]);
+  }, [activeTrack, sourceMode, algorithmicVariation]);
 
   const activePhase = useMemo(() => {
     return (
@@ -309,14 +335,34 @@ export default function App() {
 
           <div className="flex items-center gap-2 shrink-0">
             {sourceMode === 'algorithmic' && (
-              <button
-                type="button"
-                onClick={handleNewAlgorithmicConnection}
-                className="min-h-[40px] px-4 py-2 rounded-md text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-slate-100 border border-slate-700 inline-flex items-center gap-2 transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-400"
-              >
-                <RefreshCw className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
-                <span>Новое соединение</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleExactAlgorithmicConnection}
+                  aria-pressed={!algorithmicVariation}
+                  className={`min-h-[40px] px-4 py-2 rounded-md text-xs font-semibold border inline-flex items-center gap-2 transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-400 ${
+                    !algorithmicVariation
+                      ? 'bg-amber-500 text-slate-950 border-amber-400'
+                      : 'bg-slate-900 hover:bg-slate-800 text-slate-100 border-slate-700'
+                  }`}
+                >
+                  <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Точная копия</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNewAlgorithmicConnection}
+                  aria-pressed={algorithmicVariation}
+                  className={`min-h-[40px] px-4 py-2 rounded-md text-xs font-semibold border inline-flex items-center gap-2 transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-400 ${
+                    algorithmicVariation
+                      ? 'bg-amber-500 text-slate-950 border-amber-400'
+                      : 'bg-slate-900 hover:bg-slate-800 text-slate-100 border-slate-700'
+                  }`}
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
+                  <span>Новое соединение</span>
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -417,6 +463,18 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {sourceMode === 'algorithmic' && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="px-6 py-3 bg-[#0B1018] border-b border-slate-800 text-sm text-slate-300"
+            >
+              {algorithmicVariation
+                ? `Режим генератора: новое соединение ${algorithmicSeed}, используются только проверенные спектральные петли`
+                : 'Режим генератора: точная копия, путь совпадает с удачной моделью'}
+            </div>
+          )}
 
           {/* Short Live Step Caption (1 concise plain-Russian sentence) */}
           <div aria-live="polite" className="px-6 py-4 bg-[#0D121B] border-b border-slate-800 flex flex-wrap items-baseline justify-between gap-2">

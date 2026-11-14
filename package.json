@@ -9,9 +9,10 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test:generator": "tsx --test src/audio/generator/generator.test.ts src/audio/generator/workletParity.test.ts",
-    "compare:generator": "tsx scripts/compareAlgorithmicGenerator.ts",
-    "benchmark:generator": "tsx scripts/benchmarkAlgorithmicWorklet.ts"
+    "test:generator": "tsx --test src/audio/generator/referenceGraph.test.ts src/audio/generator/referenceGraphWorklet.test.ts",
+    "compare:generator": "tsx scripts/verifyReferenceGraph.ts",
+    "benchmark:generator": "tsx scripts/benchmarkReferenceGraphWorklet.ts",
+    "render:generator": "tsx scripts/renderReferenceGraphExamples.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

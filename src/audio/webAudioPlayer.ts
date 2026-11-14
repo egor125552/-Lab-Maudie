@@ -1,6 +1,6 @@
 import { createDialupWorkletProcessorCode } from './dialupDsp';
-import type { AlgorithmicPlan } from './generator/types';
-import { createAlgorithmicDialupWorkletProcessorCode } from './generator/worklet';
+import type { ReferenceGraphWorkletModel } from './generator/referenceGraphWorklet';
+import { createReferenceGraphWorkletProcessorCode } from './generator/referenceGraphWorklet';
 
 export interface DecodedTrackData {
   samples: Float32Array;
@@ -8,7 +8,7 @@ export interface DecodedTrackData {
   durationSec: number;
 }
 
-type PlaybackMode = 'pcm' | 'algorithmic';
+type PlaybackMode = 'pcm' | 'referenceGraph';
 
 export class DialupAudioPlayer {
   private ctx: AudioContext | null = null;
@@ -19,9 +19,9 @@ export class DialupAudioPlayer {
   private pcmWorkletReady = false;
   private pcmWorkletInitPromise: Promise<boolean> | null = null;
 
-  private algorithmicWorkletNode: AudioWorkletNode | null = null;
-  private algorithmicWorkletReady = false;
-  private algorithmicWorkletInitPromise: Promise<boolean> | null = null;
+  private referenceGraphWorkletNode: AudioWorkletNode | null = null;
+  private referenceGraphWorkletReady = false;
+  private referenceGraphWorkletInitPromise: Promise<boolean> | null = null;
 
   private source: AudioBufferSourceNode | null = null;
   private audioBuffer: AudioBuffer | null = null;
@@ -37,7 +37,7 @@ export class DialupAudioPlayer {
 
   private pendingSamples: Float32Array | null = null;
   private pendingSampleRate = 44100;
-  private pendingAlgorithmicPlan: AlgorithmicPlan | null = null;
+  private pendingReferenceGraphModel: ReferenceGraphWorkletModel | null = null;
 
   private ensureContext(): AudioContext {
     if (!this.ctx) {
@@ -45,7 +45,11 @@ export class DialupAudioPlayer {
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
 
-      this.ctx = new AudioCtx();
+      try {
+        this.ctx = new AudioCtx({ sampleRate: 44100 });
+      } catch {
+        this.ctx = new AudioCtx();
+      }
       this.gainNode = this.ctx.createGain();
       this.gainNode.gain.value = this.volume;
 
@@ -132,19 +136,22 @@ export class DialupAudioPlayer {
     return this.pcmWorkletInitPromise;
   }
 
-  private async ensureAlgorithmicWorklet(): Promise<boolean> {
+  private async ensureReferenceGraphWorklet(): Promise<boolean> {
     const ctx = this.ensureContext();
-    if (this.algorithmicWorkletReady && this.algorithmicWorkletNode) return true;
-    if (this.algorithmicWorkletInitPromise) return this.algorithmicWorkletInitPromise;
+    if (Math.abs(ctx.sampleRate - 44100) > 1) return false;
+    if (this.referenceGraphWorkletReady && this.referenceGraphWorkletNode) return true;
+    if (this.referenceGraphWorkletInitPromise) {
+      return this.referenceGraphWorkletInitPromise;
+    }
 
-    this.algorithmicWorkletInitPromise = (async () => {
+    this.referenceGraphWorkletInitPromise = (async () => {
       const registered = await this.registerWorklet(
-        createAlgorithmicDialupWorkletProcessorCode()
+        createReferenceGraphWorkletProcessorCode()
       );
       if (!registered) return false;
 
       try {
-        const node = new AudioWorkletNode(ctx, 'algorithmic-dialup-worklet', {
+        const node = new AudioWorkletNode(ctx, 'reference-graph-worklet', {
           numberOfInputs: 0,
           numberOfOutputs: 1,
           outputChannelCount: [1],
@@ -152,22 +159,22 @@ export class DialupAudioPlayer {
         this.attachWorkletMessages(node);
         if (this.gainNode) node.connect(this.gainNode);
 
-        if (this.pendingAlgorithmicPlan) {
+        if (this.pendingReferenceGraphModel) {
           node.port.postMessage({
-            type: 'load-plan',
-            plan: this.pendingAlgorithmicPlan,
+            type: 'load-reference-model',
+            model: this.pendingReferenceGraphModel,
           });
         }
 
-        this.algorithmicWorkletNode = node;
-        this.algorithmicWorkletReady = true;
+        this.referenceGraphWorkletNode = node;
+        this.referenceGraphWorkletReady = true;
         return true;
       } catch {
         return false;
       }
     })();
 
-    return this.algorithmicWorkletInitPromise;
+    return this.referenceGraphWorkletInitPromise;
   }
 
   async decodeAudioUrl(url: string): Promise<DecodedTrackData> {
@@ -186,9 +193,7 @@ export class DialupAudioPlayer {
 
     if (decoded.numberOfChannels > 1) {
       const ch1 = decoded.getChannelData(1);
-      for (let i = 0; i < len; i++) {
-        mono[i] = 0.5 * (ch0[i] + ch1[i]);
-      }
+      for (let i = 0; i < len; i++) mono[i] = 0.5 * (ch0[i] + ch1[i]);
     } else {
       mono.set(ch0);
     }
@@ -210,7 +215,7 @@ export class DialupAudioPlayer {
   loadSamples(samples: Float32Array, sampleRate: number) {
     this.stop(false);
     this.playbackMode = 'pcm';
-    this.pendingAlgorithmicPlan = null;
+    this.pendingReferenceGraphModel = null;
     this.pendingSamples = samples;
     this.pendingSampleRate = sampleRate;
 
@@ -231,25 +236,28 @@ export class DialupAudioPlayer {
     }
   }
 
-  loadAlgorithmicPlan(plan: AlgorithmicPlan, previewSamples: Float32Array) {
+  loadReferenceGraphModel(
+    model: ReferenceGraphWorkletModel,
+    previewSamples: Float32Array
+  ) {
     this.stop(false);
-    this.playbackMode = 'algorithmic';
-    this.pendingAlgorithmicPlan = plan;
+    this.playbackMode = 'referenceGraph';
+    this.pendingReferenceGraphModel = model;
     this.pendingSamples = previewSamples;
-    this.pendingSampleRate = plan.sampleRate;
+    this.pendingSampleRate = model.plan.sampleRate;
 
     if (this.ctx) {
-      const buf = this.ctx.createBuffer(1, previewSamples.length, plan.sampleRate);
+      const buf = this.ctx.createBuffer(1, previewSamples.length, model.plan.sampleRate);
       buf.copyToChannel(new Float32Array(previewSamples), 0);
       this.audioBuffer = buf;
     } else {
       this.audioBuffer = null;
     }
 
-    if (this.algorithmicWorkletNode) {
-      this.algorithmicWorkletNode.port.postMessage({
-        type: 'load-plan',
-        plan,
+    if (this.referenceGraphWorkletNode) {
+      this.referenceGraphWorkletNode.port.postMessage({
+        type: 'load-reference-model',
+        model,
       });
     }
   }
@@ -271,8 +279,8 @@ export class DialupAudioPlayer {
     this.onEndedCallback = onEnded ?? null;
 
     const totalDur =
-      this.playbackMode === 'algorithmic' && this.pendingAlgorithmicPlan
-        ? this.pendingAlgorithmicPlan.durationSec
+      this.playbackMode === 'referenceGraph' && this.pendingReferenceGraphModel
+        ? this.pendingReferenceGraphModel.plan.durationSec
         : this.pendingSamples
           ? this.pendingSamples.length / this.pendingSampleRate
           : (this.audioBuffer?.duration ?? 0);
@@ -289,17 +297,15 @@ export class DialupAudioPlayer {
     this.stopAtSec = targetEnd;
     this.isPlayingState = true;
 
-    if (ctx.state === 'suspended') {
-      await ctx.resume();
-    }
+    if (ctx.state === 'suspended') await ctx.resume();
 
-    if (this.playbackMode === 'algorithmic' && this.pendingAlgorithmicPlan) {
-      const hasAlgorithmic = await this.ensureAlgorithmicWorklet();
+    if (this.playbackMode === 'referenceGraph' && this.pendingReferenceGraphModel) {
+      const hasReferenceGraph = await this.ensureReferenceGraphWorklet();
       if (!this.isPlayingState) return;
 
-      if (hasAlgorithmic && this.algorithmicWorkletNode) {
+      if (hasReferenceGraph && this.referenceGraphWorkletNode) {
         this.startContextTime = ctx.currentTime;
-        this.algorithmicWorkletNode.port.postMessage({
+        this.referenceGraphWorkletNode.port.postMessage({
           type: 'play',
           offsetSec: safeOffset,
           endSec: targetEnd,
@@ -355,16 +361,13 @@ export class DialupAudioPlayer {
       duration !== undefined ? safeOffset + duration : this.audioBuffer.duration;
     this.isPlayingState = true;
 
-    if (duration !== undefined) {
-      src.start(0, safeOffset, duration);
-    } else {
-      src.start(0, safeOffset);
-    }
+    if (duration !== undefined) src.start(0, safeOffset, duration);
+    else src.start(0, safeOffset);
   }
 
   stop(triggerCallback = false) {
     this.pcmWorkletNode?.port.postMessage({ type: 'stop' });
-    this.algorithmicWorkletNode?.port.postMessage({ type: 'stop' });
+    this.referenceGraphWorkletNode?.port.postMessage({ type: 'stop' });
 
     if (this.source) {
       const src = this.source;
@@ -379,9 +382,7 @@ export class DialupAudioPlayer {
     }
 
     this.isPlayingState = false;
-    if (triggerCallback) {
-      this.onEndedCallback?.();
-    }
+    if (triggerCallback) this.onEndedCallback?.();
   }
 
   getIsPlaying(): boolean {
@@ -389,23 +390,19 @@ export class DialupAudioPlayer {
   }
 
   getCurrentTimeSec(): number {
-    if (!this.isPlayingState || !this.ctx) {
-      return this.startOffsetSec;
-    }
+    if (!this.isPlayingState || !this.ctx) return this.startOffsetSec;
 
     if (
-      this.playbackMode === 'algorithmic' &&
-      this.algorithmicWorkletReady &&
-      this.algorithmicWorkletNode
+      this.playbackMode === 'referenceGraph' &&
+      this.referenceGraphWorkletReady &&
+      this.referenceGraphWorkletNode
     ) {
       return this.workletTimeSec;
     }
 
     const elapsed = this.ctx.currentTime - this.startContextTime;
     const pos = this.startOffsetSec + elapsed;
-    if (this.stopAtSec !== null && pos >= this.stopAtSec) {
-      return this.stopAtSec;
-    }
+    if (this.stopAtSec !== null && pos >= this.stopAtSec) return this.stopAtSec;
     return pos;
   }
 
@@ -418,7 +415,7 @@ export class DialupAudioPlayer {
   dispose() {
     this.stop(false);
 
-    for (const node of [this.pcmWorkletNode, this.algorithmicWorkletNode]) {
+    for (const node of [this.pcmWorkletNode, this.referenceGraphWorkletNode]) {
       if (!node) continue;
       try {
         node.disconnect();
@@ -428,7 +425,7 @@ export class DialupAudioPlayer {
     }
 
     this.pcmWorkletNode = null;
-    this.algorithmicWorkletNode = null;
+    this.referenceGraphWorkletNode = null;
 
     if (this.ctx) {
       void this.ctx.close();
