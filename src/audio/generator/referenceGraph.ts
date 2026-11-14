@@ -47,6 +47,7 @@ export interface ReferenceGraphPlan {
   sampleRate: number;
   seed: number;
   variation: boolean;
+  longSounds: boolean;
   frameSequence: Uint16Array;
   durationSec: number;
   phases: HandshakePhase[];
@@ -105,6 +106,66 @@ function makePhases(
           : `${base.simpleSummary} Этот вариант идёт другим проверенным путём той же модели.`,
     };
   });
+}
+
+function appendLongSoundStage(
+  out: number[],
+  range: ReferenceStageFrameRange,
+  transitionScores: number[]
+): void {
+  switch (range.id) {
+    case 'dialing':
+      appendRange(out, range.startFrame, range.endFrame);
+      return;
+
+    case 'waiting': {
+      appendRange(out, 351, 884);
+      return;
+    }
+
+    case 'ansam': {
+      appendRange(out, 885, 900);
+      appendRepeat(out, 901, 953, 6, transitionScores);
+      appendRange(out, 954, 1209);
+      return;
+    }
+
+    case 'probe': {
+      appendRange(out, 1210, 1230);
+      appendRepeat(out, 1231, 1239, 5, transitionScores);
+      appendRange(out, 1240, 1291);
+      appendRepeat(out, 1292, 1304, 5, transitionScores);
+      appendRange(out, 1305, 1325);
+      appendRepeat(out, 1326, 1343, 5, transitionScores);
+      appendRange(out, 1344, 1353);
+      return;
+    }
+
+    case 'training': {
+      appendRange(out, 1354, 1407);
+      appendRepeat(out, 1408, 1427, 4, transitionScores);
+      appendRange(out, 1428, 1519);
+      appendRepeat(out, 1520, 1543, 4, transitionScores);
+      appendRange(out, 1544, 1607);
+      return;
+    }
+
+    case 'waterfall': {
+      appendRange(out, 1608, 1631);
+      appendRepeat(out, 1632, 1646, 4, transitionScores);
+      appendRange(out, 1647, 1863);
+      appendRepeat(out, 1864, 1891, 4, transitionScores);
+      appendRange(out, 1892, 2013);
+      return;
+    }
+
+    case 'connect': {
+      appendRange(out, 2014, 2150);
+      appendRepeat(out, 2151, 2216, 3, transitionScores);
+      appendRange(out, 2217, 2539);
+      return;
+    }
+  }
 }
 
 function appendStageVariation(
@@ -175,6 +236,7 @@ function appendStageVariation(
 export function buildReferenceGraphPlan(options: {
   seed: number;
   variation: boolean;
+  longSounds?: boolean;
 }): ReferenceGraphPlan {
   const random = mulberry32(options.seed >>> 0);
   const output: number[] = [];
@@ -184,7 +246,9 @@ export function buildReferenceGraphPlan(options: {
   for (const range of REFERENCE_STAGE_FRAME_RANGES) {
     const outputStartFrame = output.length;
 
-    if (options.variation) {
+    if (options.longSounds) {
+      appendLongSoundStage(output, range, transitionScores);
+    } else if (options.variation) {
       appendStageVariation(output, range, random, transitionScores);
     } else {
       appendRange(output, range.startFrame, range.endFrame);
@@ -204,6 +268,7 @@ export function buildReferenceGraphPlan(options: {
     sampleRate: SAMPLE_RATE,
     seed: options.seed >>> 0,
     variation: options.variation,
+    longSounds: options.longSounds ?? false,
     frameSequence,
     durationSec,
     phases: makePhases(stageSlices, durationSec, options.variation),

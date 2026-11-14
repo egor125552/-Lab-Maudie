@@ -117,3 +117,42 @@ test('several rendered generated connections remain as smooth as the accepted lo
     assert.ok(maxJump(rendered.samples) <= allowedJump, `seed ${seed} has a rough seam`);
   }
 });
+
+test('long-sounds mode lengthens individual audible motifs without freezing single frames', () => {
+  const exact = buildReferenceGraphPlan({ seed: 0, variation: false });
+  const long = buildReferenceGraphPlan({ seed: 0, variation: false, longSounds: true });
+
+  assert.ok(long.durationSec > exact.durationSec + 8, `${long.durationSec}`);
+
+  const exactById = new Map(exact.stageSlices.map((s) => [s.id, s]));
+  const longById = new Map(long.stageSlices.map((s) => [s.id, s]));
+  for (const id of ['ansam', 'probe', 'training', 'waterfall', 'connect'] as const) {
+    const a = exactById.get(id)!;
+    const b = longById.get(id)!;
+    assert.ok(
+      b.outputEndFrame - b.outputStartFrame > a.outputEndFrame - a.outputStartFrame,
+      `${id} was not lengthened`
+    );
+  }
+
+  let longestFrozenRun = 1;
+  let run = 1;
+  for (let i = 1; i < long.frameSequence.length; i++) {
+    if (long.frameSequence[i] === long.frameSequence[i - 1]) {
+      run++;
+      longestFrozenRun = Math.max(longestFrozenRun, run);
+    } else {
+      run = 1;
+    }
+  }
+  assert.ok(longestFrozenRun <= 2, `single frame frozen for ${longestFrozenRun} hops`);
+});
+
+test('long-sounds mode is no rougher than the accepted long connection', () => {
+  const long = renderReferenceGraphPlan(
+    buildReferenceGraphPlan({ seed: 0, variation: false, longSounds: true })
+  );
+  const accepted = synthesizeDialupHandshake({ ...DEFAULT_CONFIG, extendedMode: true });
+  const allowed = maxJump(accepted.samples) * 1.02 + 1e-6;
+  assert.ok(maxJump(long.samples) <= allowed, `${maxJump(long.samples)} > ${allowed}`);
+});

@@ -46,6 +46,7 @@ export default function App() {
   const [volume, setVolume] = useState<number>(0.9);
   const [algorithmicSeed, setAlgorithmicSeed] = useState<number>(1);
   const [algorithmicVariation, setAlgorithmicVariation] = useState<boolean>(false);
+  const [algorithmicLongSounds, setAlgorithmicLongSounds] = useState<boolean>(false);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playheadSec, setPlayheadSec] = useState<number>(0);
   const [exportSaved, setExportSaved] = useState<boolean>(false);
@@ -74,8 +75,9 @@ export default function App() {
       buildReferenceGraphPlan({
         seed: algorithmicSeed,
         variation: algorithmicVariation,
+        longSounds: algorithmicLongSounds,
       }),
-    [algorithmicSeed, algorithmicVariation]
+    [algorithmicSeed, algorithmicVariation, algorithmicLongSounds]
   );
   const synthesisAlgorithmic = useMemo(
     () => renderReferenceGraphPlan(referenceGraphPlan),
@@ -208,6 +210,7 @@ export default function App() {
     playerRef.current?.stop(false);
     setIsPlaying(false);
     setPlayheadSec(0);
+    setAlgorithmicLongSounds(false);
     setAlgorithmicVariation(true);
     setAlgorithmicSeed((seed) => seed + 1);
   }, []);
@@ -217,6 +220,15 @@ export default function App() {
     setIsPlaying(false);
     setPlayheadSec(0);
     setAlgorithmicVariation(false);
+    setAlgorithmicLongSounds(false);
+  }, []);
+
+  const handleLongSoundsAlgorithmicConnection = useCallback(() => {
+    playerRef.current?.stop(false);
+    setIsPlaying(false);
+    setPlayheadSec(0);
+    setAlgorithmicVariation(false);
+    setAlgorithmicLongSounds(true);
   }, []);
 
   const handleTogglePlay = useCallback(() => {
@@ -274,16 +286,18 @@ export default function App() {
     const link = document.createElement('a');
     link.href = url;
     link.download =
-      sourceMode === 'algorithmic' && algorithmicVariation
-        ? 'Новое dial-up соединение по модели.wav'
-        : EXPORT_NAMES[sourceMode];
+      sourceMode === 'algorithmic' && algorithmicLongSounds
+        ? 'Dial-up с длинными звуками.wav'
+        : sourceMode === 'algorithmic' && algorithmicVariation
+          ? 'Новое dial-up соединение по модели.wav'
+          : EXPORT_NAMES[sourceMode];
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     setExportSaved(true);
     setTimeout(() => setExportSaved(false), 2200);
-  }, [activeTrack, sourceMode, algorithmicVariation]);
+  }, [activeTrack, sourceMode, algorithmicVariation, algorithmicLongSounds]);
 
   const activePhase = useMemo(() => {
     return (
@@ -339,15 +353,28 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleExactAlgorithmicConnection}
-                  aria-pressed={!algorithmicVariation}
+                  aria-pressed={!algorithmicVariation && !algorithmicLongSounds}
                   className={`min-h-[40px] px-4 py-2 rounded-md text-xs font-semibold border inline-flex items-center gap-2 transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-400 ${
-                    !algorithmicVariation
+                    !algorithmicVariation && !algorithmicLongSounds
                       ? 'bg-amber-500 text-slate-950 border-amber-400'
                       : 'bg-slate-900 hover:bg-slate-800 text-slate-100 border-slate-700'
                   }`}
                 >
                   <Check className="w-3.5 h-3.5" aria-hidden="true" />
                   <span>Точная копия</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLongSoundsAlgorithmicConnection}
+                  aria-pressed={algorithmicLongSounds}
+                  className={`min-h-[40px] px-4 py-2 rounded-md text-xs font-semibold border inline-flex items-center gap-2 transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-400 ${
+                    algorithmicLongSounds
+                      ? 'bg-amber-500 text-slate-950 border-amber-400'
+                      : 'bg-slate-900 hover:bg-slate-800 text-slate-100 border-slate-700'
+                  }`}
+                >
+                  <RefreshCw className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Длинные звуки</span>
                 </button>
                 <button
                   type="button"
@@ -470,9 +497,11 @@ export default function App() {
               aria-live="polite"
               className="px-6 py-3 bg-[#0B1018] border-b border-slate-800 text-sm text-slate-300"
             >
-              {algorithmicVariation
-                ? `Режим генератора: новое соединение ${algorithmicSeed}, используются только проверенные спектральные петли`
-                : 'Режим генератора: точная копия, путь совпадает с удачной моделью'}
+              {algorithmicLongSounds
+                ? 'Режим генератора: длинные звуки, удлиняются сами пик, bong, визги и шумовые участки'
+                : algorithmicVariation
+                  ? `Режим генератора: новое соединение ${algorithmicSeed}, используются только проверенные спектральные петли`
+                  : 'Режим генератора: точная копия, путь совпадает с удачной моделью'}
             </div>
           )}
 
