@@ -17,8 +17,8 @@ export const trainingStage: StagePlugin = {
         startSec: startSec + 0.94, endSec: startSec + 1.52,
         amp: 0.12, fromHz: 3350, toHz: 2750, edgeSec: 0.006,
       },
-      randomMultitone('caller', startSec + 1.28, 1.16, 0.17, 2600, 3400, 24, seed + 43),
-      randomMultitone('answer', startSec + 1.62, 0.82, 0.11, 2850, 3300, 14, seed + 44),
+      randomMultitone('caller', startSec + 1.28, 1.16, 0.17, 2600, 3400, 18, seed + 43),
+      randomMultitone('answer', startSec + 1.62, 0.82, 0.11, 2850, 3300, 12, seed + 44),
       {
         kind: 'tone', side: 'answer',
         startSec: startSec + 2.43, endSec: startSec + 2.51,

@@ -101,6 +101,11 @@ class AlgorithmicDialupProcessor extends AudioWorkletProcessor {
     }
 
     const ratio = this.plan.sampleRate / sampleRate;
+    const blockStartSec = this.cursor / this.plan.sampleRate;
+    const blockEndSec = blockStartSec + (ch.length * ratio) / this.plan.sampleRate;
+    const activeEvents = this.plan.events.filter(
+      (event) => event.endSec > blockStartSec && event.startSec < blockEndSec
+    );
     let ended = false;
 
     for (let i = 0; i < ch.length; i++) {
@@ -112,11 +117,11 @@ class AlgorithmicDialupProcessor extends AudioWorkletProcessor {
 
       const timeSec = this.cursor / this.plan.sampleRate;
       let sample = 0;
-      for (let e = 0; e < this.plan.events.length; e++) {
-        sample += renderEvent(this.plan.events[e], timeSec);
+      for (let e = 0; e < activeEvents.length; e++) {
+        sample += renderEvent(activeEvents[e], timeSec);
       }
 
-      ch[i] = Math.tanh(sample * 1.12) / Math.tanh(1.12) * this.gain;
+      ch[i] = 0.90 * Math.tanh(sample * 1.12) / Math.tanh(1.12) * this.gain;
       this.cursor += ratio;
     }
 

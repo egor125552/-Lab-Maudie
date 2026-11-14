@@ -1,12 +1,14 @@
 import { createDialupWorkletProcessorCode } from './dialupDsp';
-import { createAlgorithmicDialupWorkletProcessorCode } from './generator/worklet';
 import type { AlgorithmicPlan } from './generator/types';
+import { createAlgorithmicDialupWorkletProcessorCode } from './generator/worklet';
 
 export interface DecodedTrackData {
   samples: Float32Array;
   sampleRate: number;
   durationSec: number;
 }
+
+type PlaybackMode = 'pcm' | 'algorithmic';
 
 export class DialupAudioPlayer {
   private ctx: AudioContext | null = null;
@@ -25,6 +27,7 @@ export class DialupAudioPlayer {
   private audioBuffer: AudioBuffer | null = null;
 
   private isPlayingState = false;
+  private playbackMode: PlaybackMode = 'pcm';
   private startContextTime = 0;
   private startOffsetSec = 0;
   private workletTimeSec = 0;
@@ -76,24 +79,32 @@ export class DialupAudioPlayer {
     };
   }
 
+  private async registerWorklet(code: string): Promise<boolean> {
+    const ctx = this.ensureContext();
+    if (!ctx.audioWorklet || typeof AudioWorkletNode === 'undefined') return false;
+
+    const blob = new Blob([code], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+    try {
+      await ctx.audioWorklet.addModule(blobUrl);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+  }
+
   private async ensurePcmWorklet(): Promise<boolean> {
     const ctx = this.ensureContext();
     if (this.pcmWorkletReady && this.pcmWorkletNode) return true;
     if (this.pcmWorkletInitPromise) return this.pcmWorkletInitPromise;
 
     this.pcmWorkletInitPromise = (async () => {
+      const registered = await this.registerWorklet(createDialupWorkletProcessorCode());
+      if (!registered) return false;
+
       try {
-        if (!ctx.audioWorklet || typeof AudioWorkletNode === 'undefined') return false;
-
-        const code = createDialupWorkletProcessorCode();
-        const blob = new Blob([code], { type: 'application/javascript' });
-        const blobUrl = URL.createObjectURL(blob);
-        try {
-          await ctx.audioWorklet.addModule(blobUrl);
-        } finally {
-          URL.revokeObjectURL(blobUrl);
-        }
-
         const node = new AudioWorkletNode(ctx, 'dialup-v90-worklet', {
           numberOfInputs: 0,
           numberOfOutputs: 1,
@@ -127,18 +138,12 @@ export class DialupAudioPlayer {
     if (this.algorithmicWorkletInitPromise) return this.algorithmicWorkletInitPromise;
 
     this.algorithmicWorkletInitPromise = (async () => {
+      const registered = await this.registerWorklet(
+        createAlgorithmicDialupWorkletProcessorCode()
+      );
+      if (!registered) return false;
+
       try {
-        if (!ctx.audioWorklet || typeof AudioWorkletNode === 'undefined') return false;
-
-        const code = createAlgorithmicDialupWorkletProcessorCode();
-        const blob = new Blob([code], { type: 'application/javascript' });
-        const blobUrl = URL.createObjectURL(blob);
-        try {
-          await ctx.audioWorklet.addModule(blobUrl);
-        } finally {
-          URL.revokeObjectURL(blobUrl);
-        }
-
         const node = new AudioWorkletNode(ctx, 'algorithmic-dialup-worklet', {
           numberOfInputs: 0,
           numberOfOutputs: 1,
@@ -189,9 +194,7 @@ export class DialupAudioPlayer {
     }
 
     let peak = 0;
-    for (let i = 0; i < len; i++) {
-      peak = Math.max(peak, Math.abs(mono[i]));
-    }
+    for (let i = 0; i < len; i++) peak = Math.max(peak, Math.abs(mono[i]));
     if (peak > 0.001) {
       const scale = 0.90 / peak;
       for (let i = 0; i < len; i++) mono[i] *= scale;
@@ -206,7 +209,10 @@ export class DialupAudioPlayer {
 
   loadSamples(samples: Float32Array, sampleRate: number) {
     this.stop(false);
+    this.playbackMode = 'pcm';
     this.pendingAlgorithmicPlan = null;
+    this.pendingSamples = samples;
+    this.pendingSampleRate = sampleRate;
 
     if (this.ctx) {
       const buf = this.ctx.createBuffer(1, samples.length, sampleRate);
@@ -215,9 +221,6 @@ export class DialupAudioPlayer {
     } else {
       this.audioBuffer = null;
     }
-
-    this.pendingSamples = samples;
-    this.pendingSampleRate = sampleRate;
 
     if (this.pcmWorkletNode) {
       this.pcmWorkletNode.port.postMessage({
@@ -228,10 +231,20 @@ export class DialupAudioPlayer {
     }
   }
 
-  loadAlgorithmicPlan(plan: AlgorithmicPlan) {
+  loadAlgorithmicPlan(plan: AlgorithmicPlan, previewSamples: Float32Array) {
     this.stop(false);
+    this.playbackMode = 'algorithmic';
     this.pendingAlgorithmicPlan = plan;
+    this.pendingSamples = previewSamples;
     this.pendingSampleRate = plan.sampleRate;
+
+    if (this.ctx) {
+      const buf = this.ctx.createBuffer(1, previewSamples.length, plan.sampleRate);
+      buf.copyToChannel(new Float32Array(previewSamples), 0);
+      this.audioBuffer = buf;
+    } else {
+      this.audioBuffer = null;
+    }
 
     if (this.algorithmicWorkletNode) {
       this.algorithmicWorkletNode.port.postMessage({
@@ -257,13 +270,17 @@ export class DialupAudioPlayer {
     this.stop(false);
     this.onEndedCallback = onEnded ?? null;
 
-    const totalDur = this.pendingAlgorithmicPlan
-      ? this.pendingAlgorithmicPlan.durationSec
-      : this.pendingSamples
-        ? this.pendingSamples.length / this.pendingSampleRate
-        : (this.audioBuffer?.duration ?? 0);
+    const totalDur =
+      this.playbackMode === 'algorithmic' && this.pendingAlgorithmicPlan
+        ? this.pendingAlgorithmicPlan.durationSec
+        : this.pendingSamples
+          ? this.pendingSamples.length / this.pendingSampleRate
+          : (this.audioBuffer?.duration ?? 0);
 
-    const safeOffset = Math.max(0, Math.min(offsetSec, Math.max(0, totalDur - 0.01)));
+    const safeOffset = Math.max(
+      0,
+      Math.min(offsetSec, Math.max(0, totalDur - 0.01))
+    );
     const targetEnd = endSec !== null ? Math.min(endSec, totalDur) : totalDur;
 
     this.startContextTime = ctx.currentTime;
@@ -276,7 +293,7 @@ export class DialupAudioPlayer {
       await ctx.resume();
     }
 
-    if (this.pendingAlgorithmicPlan) {
+    if (this.playbackMode === 'algorithmic' && this.pendingAlgorithmicPlan) {
       const hasAlgorithmic = await this.ensureAlgorithmicWorklet();
       if (!this.isPlayingState) return;
 
@@ -309,7 +326,10 @@ export class DialupAudioPlayer {
       buf.copyToChannel(new Float32Array(this.pendingSamples), 0);
       this.audioBuffer = buf;
     }
-    if (!this.audioBuffer || !this.gainNode) return;
+    if (!this.audioBuffer || !this.gainNode) {
+      this.isPlayingState = false;
+      return;
+    }
 
     const duration =
       endSec !== null
@@ -331,7 +351,8 @@ export class DialupAudioPlayer {
     this.source = src;
     this.startContextTime = ctx.currentTime;
     this.startOffsetSec = safeOffset;
-    this.stopAtSec = duration !== undefined ? safeOffset + duration : this.audioBuffer.duration;
+    this.stopAtSec =
+      duration !== undefined ? safeOffset + duration : this.audioBuffer.duration;
     this.isPlayingState = true;
 
     if (duration !== undefined) {
@@ -370,6 +391,14 @@ export class DialupAudioPlayer {
   getCurrentTimeSec(): number {
     if (!this.isPlayingState || !this.ctx) {
       return this.startOffsetSec;
+    }
+
+    if (
+      this.playbackMode === 'algorithmic' &&
+      this.algorithmicWorkletReady &&
+      this.algorithmicWorkletNode
+    ) {
+      return this.workletTimeSec;
     }
 
     const elapsed = this.ctx.currentTime - this.startContextTime;

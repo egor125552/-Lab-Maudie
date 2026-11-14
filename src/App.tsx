@@ -21,6 +21,14 @@ function formatTimeSec(sec: number): string {
   return `${String(mins).padStart(2, '0')}:${rem.toFixed(1).padStart(4, '0')}`;
 }
 
+const EXPORT_NAMES: Record<AudioSourceMode, string> = {
+  algorithmic: 'Математический dial-up.wav',
+  synth_long: 'Dial-up длинное соединение.wav',
+  synth: 'Dial-up классика.wav',
+  orig1: 'Dial-up эталон чистая линия.wav',
+  orig2: 'Dial-up эталон живой динамик.wav',
+};
+
 const SOURCE_OPTIONS: { id: AudioSourceMode; label: string }[] = [
   { id: 'algorithmic', label: 'Математический генератор' },
   { id: 'synth_long', label: 'Долгое соединение (39 сек)' },
@@ -127,9 +135,10 @@ export default function App() {
     const player = playerRef.current;
     if (!player) return;
     player.setVolume(volume);
-    player.loadSamples(activeTrack.samples, activeTrack.sampleRate);
     if (sourceMode === 'algorithmic') {
-      player.loadAlgorithmicPlan(algorithmicPlan);
+      player.loadAlgorithmicPlan(algorithmicPlan, activeTrack.samples);
+    } else {
+      player.loadSamples(activeTrack.samples, activeTrack.sampleRate);
     }
   }, [activeTrack, algorithmicPlan, sourceMode, volume]);
 
@@ -241,7 +250,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = sourceMode === 'algorithmic' ? 'Математический dial-up.wav' : `dialup-56k-${sourceMode}.wav`;
+    link.download = EXPORT_NAMES[sourceMode];
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);

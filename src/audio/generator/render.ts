@@ -1,5 +1,6 @@
 import type { AlgorithmicPlan, SynthEvent } from './types';
 
+
 function envelope(event: SynthEvent, localSec: number, durationSec: number): number {
   const edge = 'edgeSec' in event && event.edgeSec !== undefined ? event.edgeSec : 0.006;
   if (edge <= 0) return 1;
@@ -67,14 +68,8 @@ export function renderAlgorithmicPlan(plan: AlgorithmicPlan): Float32Array {
   }
 
   const warmthNorm = 1 / Math.tanh(1.12);
-  let peak = 0;
   for (let i = 0; i < samples.length; i++) {
-    samples[i] = Math.tanh(samples[i] * 1.12) * warmthNorm;
-    peak = Math.max(peak, Math.abs(samples[i]));
-  }
-  if (peak > 0.90) {
-    const scale = 0.90 / peak;
-    for (let i = 0; i < samples.length; i++) samples[i] *= scale;
+    samples[i] = 0.90 * Math.tanh(samples[i] * 1.12) * warmthNorm;
   }
 
   return samples;
