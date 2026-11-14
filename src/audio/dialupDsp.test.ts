@@ -39,8 +39,8 @@ test('sanitizeDialNumber keeps valid DTMF & pause symbols', () => {
 });
 
 test('reference audio URLs and phase timelines cover all 7 stages', () => {
-  assert.ok(REFERENCE_AUDIO_URLS.orig1.startsWith('/assets/aistudio/'));
-  assert.ok(REFERENCE_AUDIO_URLS.orig2.startsWith('/assets/aistudio/'));
+  assert.ok(REFERENCE_AUDIO_URLS.orig1.startsWith('assets/aistudio/'));
+  assert.ok(REFERENCE_AUDIO_URLS.orig2.startsWith('assets/aistudio/'));
 
   const p1 = getPhasesForSource('orig1', 26.04);
   const p2 = getPhasesForSource('orig2', 31.37);

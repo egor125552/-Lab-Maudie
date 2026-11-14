@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Check, Play, Square, Volume2 } from 'lucide-react';
+import { Download, Check, Play, RefreshCw, Square, Volume2 } from 'lucide-react';
 import {
   AudioSourceMode,
   DEFAULT_CONFIG,
@@ -10,6 +10,8 @@ import {
   synthesizeDialupHandshake,
 } from './audio/dialupDsp';
 import { DecodedTrackData, DialupAudioPlayer } from './audio/webAudioPlayer';
+import { DEFAULT_ALGORITHMIC_CONFIG, generateAlgorithmicDialup } from './audio/generator/generator';
+import type { AlgorithmicPlan } from './audio/generator/types';
 import { SimpleWaveform } from './components/SimpleWaveform';
 
 function formatTimeSec(sec: number): string {
@@ -20,6 +22,7 @@ function formatTimeSec(sec: number): string {
 }
 
 const SOURCE_OPTIONS: { id: AudioSourceMode; label: string }[] = [
+  { id: 'algorithmic', label: 'Математический генератор' },
   { id: 'synth_long', label: 'Долгое соединение (39 сек)' },
   { id: 'synth', label: 'Классика (25 сек)' },
   { id: 'orig1', label: 'Эталон 1 (Чистая линия)' },
@@ -29,6 +32,7 @@ const SOURCE_OPTIONS: { id: AudioSourceMode; label: string }[] = [
 export default function App() {
   const [sourceMode, setSourceMode] = useState<AudioSourceMode>('synth_long');
   const [volume, setVolume] = useState<number>(0.9);
+  const [algorithmicSeed, setAlgorithmicSeed] = useState<number>(DEFAULT_ALGORITHMIC_CONFIG.seed);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playheadSec, setPlayheadSec] = useState<number>(0);
   const [exportSaved, setExportSaved] = useState<boolean>(false);
@@ -51,6 +55,20 @@ export default function App() {
   const synthesisClassic = useMemo(
     () => synthesizeDialupHandshake({ ...DEFAULT_CONFIG, extendedMode: false }),
     []
+  );
+  const synthesisAlgorithmic = useMemo(
+    () => generateAlgorithmicDialup({ ...DEFAULT_ALGORITHMIC_CONFIG, seed: algorithmicSeed }),
+    [algorithmicSeed]
+  );
+  const algorithmicPlan = useMemo<AlgorithmicPlan>(
+    () => ({
+      sampleRate: synthesisAlgorithmic.sampleRate,
+      durationSec: synthesisAlgorithmic.durationSec,
+      events: synthesisAlgorithmic.events,
+      phases: synthesisAlgorithmic.phases,
+      seed: synthesisAlgorithmic.seed,
+    }),
+    [synthesisAlgorithmic]
   );
 
   // Preload & decode the two attached MP3 reference recordings for instant comparison
@@ -80,6 +98,9 @@ export default function App() {
   }, []);
 
   const activeTrack = useMemo(() => {
+    if (sourceMode === 'algorithmic') {
+      return synthesisAlgorithmic;
+    }
     if (sourceMode === 'synth_long') {
       return synthesisLong;
     }
@@ -100,14 +121,17 @@ export default function App() {
       };
     }
     return synthesisClassic;
-  }, [sourceMode, decodedTracks, synthesisLong, synthesisClassic]);
+  }, [sourceMode, decodedTracks, synthesisLong, synthesisClassic, synthesisAlgorithmic]);
 
   useEffect(() => {
     const player = playerRef.current;
     if (!player) return;
     player.setVolume(volume);
     player.loadSamples(activeTrack.samples, activeTrack.sampleRate);
-  }, [activeTrack, volume]);
+    if (sourceMode === 'algorithmic') {
+      player.loadAlgorithmicPlan(algorithmicPlan);
+    }
+  }, [activeTrack, algorithmicPlan, sourceMode, volume]);
 
   useEffect(() => {
     return () => {
@@ -154,6 +178,13 @@ export default function App() {
   const handleChangeVolume = useCallback((vol: number) => {
     setVolume(vol);
     playerRef.current?.setVolume(vol);
+  }, []);
+
+  const handleNewAlgorithmicConnection = useCallback(() => {
+    playerRef.current?.stop(false);
+    setIsPlaying(false);
+    setPlayheadSec(0);
+    setAlgorithmicSeed((seed) => seed + 1);
   }, []);
 
   const handleTogglePlay = useCallback(() => {
@@ -210,7 +241,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `dialup-56k-${sourceMode}.wav`;
+    link.download = sourceMode === 'algorithmic' ? 'Математический dial-up.wav' : `dialup-56k-${sourceMode}.wav`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -254,6 +285,7 @@ export default function App() {
                   key={opt.id}
                   type="button"
                   onClick={() => handleSelectSource(opt.id)}
+                  aria-pressed={active}
                   className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-400 ${
                     active
                       ? 'bg-amber-500 text-slate-950'
@@ -266,7 +298,17 @@ export default function App() {
             })}
           </div>
 
-          <div className="flex items-center shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
+            {sourceMode === 'algorithmic' && (
+              <button
+                type="button"
+                onClick={handleNewAlgorithmicConnection}
+                className="min-h-[40px] px-4 py-2 rounded-md text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-slate-100 border border-slate-700 inline-flex items-center gap-2 transition-colors whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:outline-amber-400"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
+                <span>Новое соединение</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleExportWav}
@@ -368,7 +410,7 @@ export default function App() {
           </div>
 
           {/* Short Live Step Caption (1 concise plain-Russian sentence) */}
-          <div className="px-6 py-4 bg-[#0D121B] border-b border-slate-800 flex flex-wrap items-baseline justify-between gap-2">
+          <div aria-live="polite" className="px-6 py-4 bg-[#0D121B] border-b border-slate-800 flex flex-wrap items-baseline justify-between gap-2">
             <div className="text-base font-semibold text-slate-100">
               {isCompleted
                 ? 'Готово — модем подключился к интернету (56 000 бит/с)'

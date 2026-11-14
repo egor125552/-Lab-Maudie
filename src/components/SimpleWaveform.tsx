@@ -127,6 +127,7 @@ export const SimpleWaveform: React.FC<SimpleWaveformProps> = ({
         ref={canvasRef}
         data-testid="waveform-canvas"
         onClick={handleClick}
+        aria-hidden="true"
         title="Нажмите в любом месте дорожки, чтобы перемотать"
         className="w-full h-[148px] sm:h-[168px] block cursor-pointer rounded"
       />

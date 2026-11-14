@@ -21,7 +21,7 @@ import {
 
 export type ModemProfileId = 'v90' | 'v34' | 'v32bis' | 'bell212a';
 export type DialMode = 'dtmf' | 'pulse';
-export type AudioSourceMode = 'synth_long' | 'synth' | 'orig1' | 'orig2';
+export type AudioSourceMode = 'algorithmic' | 'synth_long' | 'synth' | 'orig1' | 'orig2';
 
 export interface DialupConfig {
   profile: ModemProfileId;
@@ -74,9 +74,9 @@ export const DEFAULT_CONFIG: DialupConfig = {
 };
 
 export const REFERENCE_AUDIO_URLS = {
-  orig1: '/assets/aistudio/kindkinder-dial-up-modem-434763_5a618fe5.mp3',
+  orig1: 'assets/aistudio/kindkinder-dial-up-modem-434763_5a618fe5.mp3',
   orig2:
-    '/assets/aistudio/sound-effects-library-old-computer-modem-connecting-sending-data-1_59802500.mp3',
+    'assets/aistudio/sound-effects-library-old-computer-modem-connecting-sending-data-1_59802500.mp3',
 } as const;
 
 export function getPhasesForSource(

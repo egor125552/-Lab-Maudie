@@ -1,4 +1,6 @@
 import { createDialupWorkletProcessorCode } from './dialupDsp';
+import { createAlgorithmicDialupWorkletProcessorCode } from './generator/worklet';
+import type { AlgorithmicPlan } from './generator/types';
 
 export interface DecodedTrackData {
   samples: Float32Array;
@@ -10,9 +12,14 @@ export class DialupAudioPlayer {
   private ctx: AudioContext | null = null;
   private gainNode: GainNode | null = null;
   private analyser: AnalyserNode | null = null;
-  private workletNode: AudioWorkletNode | null = null;
-  private workletReady = false;
-  private workletInitPromise: Promise<boolean> | null = null;
+
+  private pcmWorkletNode: AudioWorkletNode | null = null;
+  private pcmWorkletReady = false;
+  private pcmWorkletInitPromise: Promise<boolean> | null = null;
+
+  private algorithmicWorkletNode: AudioWorkletNode | null = null;
+  private algorithmicWorkletReady = false;
+  private algorithmicWorkletInitPromise: Promise<boolean> | null = null;
 
   private source: AudioBufferSourceNode | null = null;
   private audioBuffer: AudioBuffer | null = null;
@@ -27,12 +34,14 @@ export class DialupAudioPlayer {
 
   private pendingSamples: Float32Array | null = null;
   private pendingSampleRate = 44100;
+  private pendingAlgorithmicPlan: AlgorithmicPlan | null = null;
 
   private ensureContext(): AudioContext {
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+
       this.ctx = new AudioCtx();
       this.gainNode = this.ctx.createGain();
       this.gainNode.gain.value = this.volume;
@@ -47,16 +56,35 @@ export class DialupAudioPlayer {
     return this.ctx;
   }
 
-  private async ensureWorklet(): Promise<boolean> {
-    const ctx = this.ensureContext();
-    if (this.workletReady && this.workletNode) return true;
-    if (this.workletInitPromise) return this.workletInitPromise;
+  private attachWorkletMessages(node: AudioWorkletNode) {
+    node.port.onmessage = (event) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
 
-    this.workletInitPromise = (async () => {
-      try {
-        if (!ctx.audioWorklet || typeof AudioWorkletNode === 'undefined') {
-          return false;
+      if (msg.type === 'position' && typeof msg.timeSec === 'number') {
+        this.workletTimeSec = msg.timeSec;
+        return;
+      }
+
+      if (msg.type === 'ended') {
+        this.isPlayingState = false;
+        if (typeof msg.timeSec === 'number') {
+          this.workletTimeSec = msg.timeSec;
         }
+        this.onEndedCallback?.();
+      }
+    };
+  }
+
+  private async ensurePcmWorklet(): Promise<boolean> {
+    const ctx = this.ensureContext();
+    if (this.pcmWorkletReady && this.pcmWorkletNode) return true;
+    if (this.pcmWorkletInitPromise) return this.pcmWorkletInitPromise;
+
+    this.pcmWorkletInitPromise = (async () => {
+      try {
+        if (!ctx.audioWorklet || typeof AudioWorkletNode === 'undefined') return false;
+
         const code = createDialupWorkletProcessorCode();
         const blob = new Blob([code], { type: 'application/javascript' });
         const blobUrl = URL.createObjectURL(blob);
@@ -71,21 +99,8 @@ export class DialupAudioPlayer {
           numberOfOutputs: 1,
           outputChannelCount: [1],
         });
-
-        node.port.onmessage = (event) => {
-          const msg = event.data;
-          if (!msg || typeof msg !== 'object') return;
-          if (msg.type === 'position' && typeof msg.timeSec === 'number') {
-            this.workletTimeSec = msg.timeSec;
-          } else if (msg.type === 'ended') {
-            this.isPlayingState = false;
-            this.onEndedCallback?.();
-          }
-        };
-
-        if (this.gainNode) {
-          node.connect(this.gainNode);
-        }
+        this.attachWorkletMessages(node);
+        if (this.gainNode) node.connect(this.gainNode);
 
         if (this.pendingSamples) {
           node.port.postMessage({
@@ -95,15 +110,59 @@ export class DialupAudioPlayer {
           });
         }
 
-        this.workletNode = node;
-        this.workletReady = true;
+        this.pcmWorkletNode = node;
+        this.pcmWorkletReady = true;
         return true;
       } catch {
         return false;
       }
     })();
 
-    return this.workletInitPromise;
+    return this.pcmWorkletInitPromise;
+  }
+
+  private async ensureAlgorithmicWorklet(): Promise<boolean> {
+    const ctx = this.ensureContext();
+    if (this.algorithmicWorkletReady && this.algorithmicWorkletNode) return true;
+    if (this.algorithmicWorkletInitPromise) return this.algorithmicWorkletInitPromise;
+
+    this.algorithmicWorkletInitPromise = (async () => {
+      try {
+        if (!ctx.audioWorklet || typeof AudioWorkletNode === 'undefined') return false;
+
+        const code = createAlgorithmicDialupWorkletProcessorCode();
+        const blob = new Blob([code], { type: 'application/javascript' });
+        const blobUrl = URL.createObjectURL(blob);
+        try {
+          await ctx.audioWorklet.addModule(blobUrl);
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+
+        const node = new AudioWorkletNode(ctx, 'algorithmic-dialup-worklet', {
+          numberOfInputs: 0,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        });
+        this.attachWorkletMessages(node);
+        if (this.gainNode) node.connect(this.gainNode);
+
+        if (this.pendingAlgorithmicPlan) {
+          node.port.postMessage({
+            type: 'load-plan',
+            plan: this.pendingAlgorithmicPlan,
+          });
+        }
+
+        this.algorithmicWorkletNode = node;
+        this.algorithmicWorkletReady = true;
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+
+    return this.algorithmicWorkletInitPromise;
   }
 
   async decodeAudioUrl(url: string): Promise<DecodedTrackData> {
@@ -111,6 +170,7 @@ export class DialupAudioPlayer {
     if (!response.ok) {
       throw new Error(`Failed to fetch audio: ${response.status}`);
     }
+
     const arrayBuf = await response.arrayBuffer();
     const ctx = this.ensureContext();
     const decoded = await ctx.decodeAudioData(arrayBuf.slice(0));
@@ -118,6 +178,7 @@ export class DialupAudioPlayer {
     const len = decoded.length;
     const mono = new Float32Array(len);
     const ch0 = decoded.getChannelData(0);
+
     if (decoded.numberOfChannels > 1) {
       const ch1 = decoded.getChannelData(1);
       for (let i = 0; i < len; i++) {
@@ -129,14 +190,11 @@ export class DialupAudioPlayer {
 
     let peak = 0;
     for (let i = 0; i < len; i++) {
-      const a = Math.abs(mono[i]);
-      if (a > peak) peak = a;
+      peak = Math.max(peak, Math.abs(mono[i]));
     }
     if (peak > 0.001) {
       const scale = 0.90 / peak;
-      for (let i = 0; i < len; i++) {
-        mono[i] *= scale;
-      }
+      for (let i = 0; i < len; i++) mono[i] *= scale;
     }
 
     return {
@@ -148,6 +206,8 @@ export class DialupAudioPlayer {
 
   loadSamples(samples: Float32Array, sampleRate: number) {
     this.stop(false);
+    this.pendingAlgorithmicPlan = null;
+
     if (this.ctx) {
       const buf = this.ctx.createBuffer(1, samples.length, sampleRate);
       buf.copyToChannel(new Float32Array(samples), 0);
@@ -155,14 +215,28 @@ export class DialupAudioPlayer {
     } else {
       this.audioBuffer = null;
     }
+
     this.pendingSamples = samples;
     this.pendingSampleRate = sampleRate;
 
-    if (this.workletNode) {
-      this.workletNode.port.postMessage({
+    if (this.pcmWorkletNode) {
+      this.pcmWorkletNode.port.postMessage({
         type: 'load',
         samples,
         sampleRate,
+      });
+    }
+  }
+
+  loadAlgorithmicPlan(plan: AlgorithmicPlan) {
+    this.stop(false);
+    this.pendingAlgorithmicPlan = plan;
+    this.pendingSampleRate = plan.sampleRate;
+
+    if (this.algorithmicWorkletNode) {
+      this.algorithmicWorkletNode.port.postMessage({
+        type: 'load-plan',
+        plan,
       });
     }
   }
@@ -183,9 +257,12 @@ export class DialupAudioPlayer {
     this.stop(false);
     this.onEndedCallback = onEnded ?? null;
 
-    const totalDur = this.pendingSamples
-      ? this.pendingSamples.length / this.pendingSampleRate
-      : (this.audioBuffer?.duration ?? 0);
+    const totalDur = this.pendingAlgorithmicPlan
+      ? this.pendingAlgorithmicPlan.durationSec
+      : this.pendingSamples
+        ? this.pendingSamples.length / this.pendingSampleRate
+        : (this.audioBuffer?.duration ?? 0);
+
     const safeOffset = Math.max(0, Math.min(offsetSec, Math.max(0, totalDur - 0.01)));
     const targetEnd = endSec !== null ? Math.min(endSec, totalDur) : totalDur;
 
@@ -199,20 +276,34 @@ export class DialupAudioPlayer {
       await ctx.resume();
     }
 
-    const hasWorklet = await this.ensureWorklet();
-    if (!this.isPlayingState) return;
+    if (this.pendingAlgorithmicPlan) {
+      const hasAlgorithmic = await this.ensureAlgorithmicWorklet();
+      if (!this.isPlayingState) return;
 
-    if (hasWorklet && this.workletNode && this.pendingSamples) {
-      this.startContextTime = ctx.currentTime;
-      this.workletNode.port.postMessage({
-        type: 'play',
-        offsetSec: safeOffset,
-        endSec: targetEnd,
-      });
-      return;
+      if (hasAlgorithmic && this.algorithmicWorkletNode) {
+        this.startContextTime = ctx.currentTime;
+        this.algorithmicWorkletNode.port.postMessage({
+          type: 'play',
+          offsetSec: safeOffset,
+          endSec: targetEnd,
+        });
+        return;
+      }
+    } else {
+      const hasPcm = await this.ensurePcmWorklet();
+      if (!this.isPlayingState) return;
+
+      if (hasPcm && this.pcmWorkletNode && this.pendingSamples) {
+        this.startContextTime = ctx.currentTime;
+        this.pcmWorkletNode.port.postMessage({
+          type: 'play',
+          offsetSec: safeOffset,
+          endSec: targetEnd,
+        });
+        return;
+      }
     }
 
-    // Fallback if AudioWorklet is unavailable
     if (!this.audioBuffer && this.pendingSamples) {
       const buf = ctx.createBuffer(1, this.pendingSamples.length, this.pendingSampleRate);
       buf.copyToChannel(new Float32Array(this.pendingSamples), 0);
@@ -251,9 +342,9 @@ export class DialupAudioPlayer {
   }
 
   stop(triggerCallback = false) {
-    if (this.workletNode) {
-      this.workletNode.port.postMessage({ type: 'stop' });
-    }
+    this.pcmWorkletNode?.port.postMessage({ type: 'stop' });
+    this.algorithmicWorkletNode?.port.postMessage({ type: 'stop' });
+
     if (this.source) {
       const src = this.source;
       this.source = null;
@@ -262,9 +353,10 @@ export class DialupAudioPlayer {
         src.stop();
         src.disconnect();
       } catch {
-        // already stopped
+        // Already stopped.
       }
     }
+
     this.isPlayingState = false;
     if (triggerCallback) {
       this.onEndedCallback?.();
@@ -279,6 +371,7 @@ export class DialupAudioPlayer {
     if (!this.isPlayingState || !this.ctx) {
       return this.startOffsetSec;
     }
+
     const elapsed = this.ctx.currentTime - this.startContextTime;
     const pos = this.startOffsetSec + elapsed;
     if (this.stopAtSec !== null && pos >= this.stopAtSec) {
@@ -295,14 +388,19 @@ export class DialupAudioPlayer {
 
   dispose() {
     this.stop(false);
-    if (this.workletNode) {
+
+    for (const node of [this.pcmWorkletNode, this.algorithmicWorkletNode]) {
+      if (!node) continue;
       try {
-        this.workletNode.disconnect();
+        node.disconnect();
       } catch {
-        // ignore
+        // Ignore already disconnected nodes.
       }
-      this.workletNode = null;
     }
+
+    this.pcmWorkletNode = null;
+    this.algorithmicWorkletNode = null;
+
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;
