@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background-color: #090C12;
+    color: #F1F5F9;
+    scroll-behavior: smooth;
+  }
+}
+
+/* Precision instrument slider styling */
+input[type="range"].dsp-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: #1E293B;
+  outline: none;
+}
+
+input[type="range"].dsp-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background: #F59E0B;
+  border: 1px solid #090C12;
+  cursor: pointer;
+  transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.12s ease;
+}
+
+input[type="range"].dsp-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+  background: #FBBF24;
+}
+
+input[type="range"].dsp-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background: #F59E0B;
+  border: 1px solid #090C12;
+  cursor: pointer;
+}

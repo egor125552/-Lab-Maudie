@@ -1,0 +1,6 @@
+{
+  "name": "Dial-Up DSP — Синтезатор модемного рукопожатия V.90",
+  "description": "Точный физический синтезатор звука Dial-up модема по стандартам ITU-T V.8, V.21, V.34 и V.90 со спектрограммой, осциллографом и экспортом WAV.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
