@@ -623,126 +623,81 @@ function injectDirectLineDialing44k(samples: Float32Array, dialDigits: string): 
 }
 
 /**
- * Synthesizes 44.1 kHz studio-clean direct-line audio from a sequence of 10ms MDCT frames
- * using an 80-oscillator TDAC cosine bank, spectral noise gate, 192-point Blackman-Harris
- * Polyphase Sinc Filter (4.63 kHz passband), and analog telephone line hybrid mastering.
+ * Synthesizes 44.1 kHz studio-clean direct-line audio NATIVE at 44,100 Hz (M44 = 440, N44 = 880)
+ * directly from the 80 continuous-time cosine oscillators without any 11 kHz bottleneck or low-pass blur,
+ * combined with Phase-Aware Tonal Noise Gating so all handshake tones ring crystal-clear.
  */
 function renderFrameSequenceTo44k(frameSeq: Uint16Array, isExtended: boolean): Float32Array {
   const denseCoeffs = getDense10msFrameTable();
-  const M = MDCT_HOP; // 110 samples = 9.977 ms
-  const N = 2 * M; // 220 samples Sine window
-  const numBins = MDCT_KMAX - MDCT_KMIN; // 80 oscillators
+  const M11 = MDCT_HOP; // 110
+  const M44 = M11 * 4; // 440 samples at 44,100 Hz = 9.977 ms per frame
+  const N44 = 2 * M44; // 880 samples Sine window at 44,100 Hz
+  const numBins = MDCT_KMAX - MDCT_KMIN; // 80 cosine oscillators
   const numSeqFrames = frameSeq.length;
-  const total11kSamples = (numSeqFrames + 1) * M;
-  const pcm11k = new Float32Array(total11kSamples);
+  const total44k = (numSeqFrames + 1) * M44;
+  const out44k = new Float32Array(total44k);
 
-  const win = new Float32Array(N);
-  for (let n = 0; n < N; n++) {
-    win[n] = Math.sin((Math.PI * (n + 0.5)) / N);
+  const win44 = new Float32Array(N44);
+  for (let n = 0; n < N44; n++) {
+    win44[n] = Math.sin((Math.PI * (n + 0.5)) / N44);
   }
 
-  const windowedBasis = new Float32Array(numBins * N);
-  const scale = Math.sqrt(2 / M);
+  // Evaluate all 80 cosine oscillators natively at 44,100 Hz (zero upsampling aliasing, zero filter roll-off)
+  const windowedBasis44 = new Float32Array(numBins * N44);
+  const scale = Math.sqrt(2 / M11);
   for (let b = 0; b < numBins; b++) {
     const k = MDCT_KMIN + b;
-    // Subtle high-band spectral compensation so 2.4–4.1 kHz modem tones are crystal clear on the line
-    const freqHz = ((k + 0.5) * 11025) / 220;
-    const eqBoost = freqHz > 2000 ? 1.0 + 0.22 * Math.min(1, (freqHz - 2000) / 1800) : 1.0;
-    for (let n = 0; n < N; n++) {
-      windowedBasis[b * N + n] =
-        win[n] * scale * eqBoost * Math.cos((Math.PI / M) * (n + 0.5 + M / 2) * (k + 0.5));
+    const freqHz = ((k + 0.5) * SAMPLE_RATE) / N44;
+    // Clear direct-line presence curve across 1.8 kHz - 4.1 kHz
+    const eqBoost = freqHz > 1800 ? 1.0 + 0.28 * Math.min(1, (freqHz - 1800) / 2000) : 1.0;
+    for (let n = 0; n < N44; n++) {
+      // Exact continuous-time MDCT phase alignment at 4x sample rate
+      const t11 = (n + 0.5) / 4;
+      windowedBasis44[b * N44 + n] =
+        win44[n] * scale * eqBoost * Math.cos((Math.PI / M11) * (t11 + M11 / 2) * (k + 0.5));
     }
   }
 
   const dequantLut = new Float32Array(256);
   for (let q = -128; q <= 127; q++) {
-    // Gate out |q| <= 1 (-84 dB quantization noise floor) for studio-clean direct line silence
-    if (Math.abs(q) <= 1) {
-      dequantLut[q & 0xff] = 0;
-      continue;
-    }
     const sign = q < 0 ? -1 : 1;
-    dequantLut[q & 0xff] = sign * Math.pow(Math.abs(q) / 127, 2) * 1.6;
+    dequantLut[q & 0xff] = sign * Math.pow(Math.abs(q) / 127, 2) * 1.65;
   }
 
   for (let sIdx = 0; sIdx < numSeqFrames; sIdx++) {
     const srcFrame = frameSeq[sIdx];
-    const i0 = sIdx * M;
+    const i0 = sIdx * M44;
     const cOffset = srcFrame * numBins;
+
+    // Phase-aware spectral noise gate:
+    // - Frames 350..1353 are narrowband tonal stages (V.8bis, FSK trills, 2100 Hz ANSam, CM/JM, L1/L2 Bong-bong).
+    //   Gating out weak background bins (|q| <= 4) strips MP3/recording dirt so the pure tones ring like glass!
+    // - Frames 1354..2539 are wideband equalizer/training/56K stages where subtle bins form the smooth "waterfall".
+    const gateThreshold = srcFrame < 1354 ? 4 : 1;
 
     for (let b = 0; b < numBins; b++) {
       const q = denseCoeffs[cOffset + b];
-      if (q === 0) continue;
+      if (q === 0 || Math.abs(q) <= gateThreshold) continue;
       const val = dequantLut[q & 0xff];
-      if (val === 0) continue;
-      const bRow = b * N;
-      for (let n = 0; n < N; n++) {
-        pcm11k[i0 + n] += val * windowedBasis[bRow + n];
+      const bRow = b * N44;
+      for (let n = 0; n < N44; n++) {
+        out44k[i0 + n] += val * windowedBasis44[bRow + n];
       }
     }
   }
 
-  // 192-point (halfTaps = 24) 4-Term Blackman-Harris Polyphase Windowed-Sinc Upsampler (4x: 11025 -> 44100 Hz)
-  // Passband up to 4.63 kHz (cutoff = 0.84) with -92 dB ultrasonic alias rejection!
-  const L = 4;
-  const halfTaps = 24;
-  const tapsPerPhase = 2 * halfTaps;
-  const filterPhases = new Float32Array(L * tapsPerPhase);
-  const cutoff = 0.84;
+  // Replace Phase 1 (0.0s - 3.42s) with pure 44.1 kHz studio direct-line dial tone + crisp DTMF buttons
+  // - Extended mode dials the new number 8-495-726-30-19
+  // - Classic mode dials the classic number 1-818-284-4059-8 in pure 44.1 kHz studio quality
+  injectDirectLineDialing44k(out44k, isExtended ? '84957263019' : '181828440598');
 
-  for (let p = 0; p < L; p++) {
-    const frac = p / L;
-    let weightSum = 0;
-    for (let m = -halfTaps; m < halfTaps; m++) {
-      const x = m - frac;
-      const sinc =
-        Math.abs(x) < 1e-6
-          ? cutoff
-          : Math.sin(Math.PI * cutoff * x) / (Math.PI * x);
-      const wPos = (x + halfTaps) / (2 * halfTaps);
-      const bh =
-        0.35875 -
-        0.48829 * Math.cos(2 * Math.PI * wPos) +
-        0.14128 * Math.cos(4 * Math.PI * wPos) -
-        0.01168 * Math.cos(6 * Math.PI * wPos);
-      const w = sinc * bh;
-      filterPhases[p * tapsPerPhase + (m + halfTaps)] = w;
-      weightSum += w;
-    }
-    for (let t = 0; t < tapsPerPhase; t++) {
-      filterPhases[p * tapsPerPhase + t] /= weightSum;
-    }
-  }
-
-  const total44k = numSeqFrames * M * L;
-  const out44k = new Float32Array(total44k);
-  const max11kIdx = total11kSamples - halfTaps - 1;
-
-  for (let n11 = halfTaps; n11 < max11kIdx; n11++) {
-    const outBase = n11 * L;
-    if (outBase + 3 >= total44k) break;
-    for (let p = 0; p < L; p++) {
-      const pBase = p * tapsPerPhase;
-      let acc = 0;
-      for (let m = -halfTaps; m < halfTaps; m++) {
-        acc += pcm11k[n11 + m] * filterPhases[pBase + (m + halfTaps)];
-      }
-      out44k[outBase + p] = acc;
-    }
-  }
-
-  // In extended mode, replace Phase 1 with a brand-new 44.1 kHz studio direct-line phone number (8-495-726-30-19)
-  if (isExtended) {
-    injectDirectLineDialing44k(out44k, '84957263019');
-  }
-
-  // Direct-Line Analog Transformer Warmth (subtle soft saturation that enriches harmonics without clipping)
-  const normTanh = 1 / Math.tanh(1.15);
+  // Direct-Line Analog Transformer Warmth (gentle harmonic saturation without clipping)
+  const normTanh = 1 / Math.tanh(1.12);
   for (let i = 0; i < total44k; i++) {
-    out44k[i] = Math.tanh(out44k[i] * 1.15) * normTanh;
+    out44k[i] = Math.tanh(out44k[i] * 1.12) * normTanh;
   }
 
-  return out44k;
+  return out44k.subarray(0, numSeqFrames * M44);
 }
 
 function getSynthesizedBaseband(extended: boolean): Float32Array {
