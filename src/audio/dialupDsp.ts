@@ -496,7 +496,7 @@ function getDense10msFrameTable(): Int8Array {
  *  - Extended 39.2s mode (`extended = true`: single call & single probe, with
  *    extended continuous carrier training, waterfall equalizer, 58 Hz comb ramp, and 56K stream)
  */
-function buildFrameSequence(extended: boolean): Uint16Array {
+export function buildFrameSequence(extended: boolean): Uint16Array {
   if (!extended) {
     const seq = new Uint16Array(MDCT_NUM_FRAMES);
     for (let i = 0; i < MDCT_NUM_FRAMES; i++) seq[i] = i;
@@ -627,7 +627,7 @@ function injectDirectLineDialing44k(samples: Float32Array, dialDigits: string): 
  * directly from the 80 continuous-time cosine oscillators without any 11 kHz bottleneck or low-pass blur,
  * combined with Phase-Aware Tonal Noise Gating so all handshake tones ring crystal-clear.
  */
-function renderFrameSequenceTo44k(frameSeq: Uint16Array, isExtended: boolean): Float32Array {
+export function renderFrameSequenceTo44k(frameSeq: Uint16Array, isExtended: boolean): Float32Array {
   const denseCoeffs = getDense10msFrameTable();
   const M11 = MDCT_HOP; // 110
   const M44 = M11 * 4; // 440 samples at 44,100 Hz = 9.977 ms per frame
