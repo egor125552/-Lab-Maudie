@@ -1,52 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  SAMPLE_RATE,
-  buildFrameSequence,
-  encodeWav16Bit,
-  renderFrameSequenceTo44k,
-} from './dialupDsp';
-import { buildSlowModemFrameSequence, synthesizeSlowModemFromSpectralFrames } from './slowModemMode';
+import { SAMPLE_RATE } from './dialupDsp';
+import { buildNaturalSlowFrameSequence, synthesizeNaturalSlowModem } from './slowModemMode';
 
-function magnitude(samples: Float32Array, startSec: number, durationSec: number, hz: number) {
-  const start = Math.floor(startSec * SAMPLE_RATE);
-  const len = Math.min(samples.length - start, Math.floor(durationSec * SAMPLE_RATE));
-  let re = 0, im = 0;
-  for (let i = 0; i < len; i++) {
-    const a = 2 * Math.PI * hz * i / SAMPLE_RATE;
-    const s = samples[start + i];
-    re += s * Math.cos(a);
-    im -= s * Math.sin(a);
+function longestIdenticalRun(seq: Uint16Array): number {
+  let best = 1, run = 1;
+  for (let i = 1; i < seq.length; i++) {
+    if (seq[i] === seq[i - 1]) {
+      run++;
+      if (run > best) best = run;
+    } else {
+      run = 1;
+    }
   }
-  return Math.hypot(re, im) / Math.max(1, len);
+  return best;
 }
 
-test('slow modem mode repeats spectral states inside our synthesizer, not rendered PCM', () => {
-  const original = buildFrameSequence(true);
-  const slow = buildSlowModemFrameSequence(original, 5, 351);
+test('natural slow mode loops moving phrases instead of freezing one 10 ms frame', () => {
+  const seq = buildNaturalSlowFrameSequence();
+  assert.ok(seq.length > 12000, `expected long multi-minute sequence, got ${seq.length} frames`);
+  assert.ok(longestIdenticalRun(seq) <= 2,
+    `a spectral frame was frozen for ${longestIdenticalRun(seq)} consecutive hops`);
 
-  assert.equal(slow.length, 351 + (original.length - 351) * 5);
-  for (let i = 0; i < 351; i++) assert.equal(slow[i], original[i]);
-
-  const sourceFrame = original[400];
-  const start = 351 + (400 - 351) * 5;
-  for (let i = 0; i < 5; i++) assert.equal(slow[start + i], sourceFrame);
+  // Dialing stays unchanged.
+  for (let i = 0; i <= 350; i++) assert.equal(seq[i], i);
 });
 
-test('slow modem synthesized by our frame renderer stays pitched and becomes multi-minute', () => {
-  const result = synthesizeSlowModemFromSpectralFrames(5);
-  assert.ok(result.durationSec > 175 && result.durationSec < 190, String(result.durationSec));
+test('natural slow modem remains finite, non-clipping and multi-minute', () => {
+  const result = synthesizeNaturalSlowModem();
+  assert.equal(result.sampleRate, SAMPLE_RATE);
+  assert.ok(result.durationSec > 120 && result.durationSec < 210, String(result.durationSec));
 
   let peak = 0;
-  for (const s of result.samples) peak = Math.max(peak, Math.abs(s));
-  assert.ok(peak <= 0.91);
-
-  // 2100 Hz ANSam begins after unchanged 3.5s + slowed 3.5..8.83 interval.
-  const ansamStart = 3.5 + (8.83 - 3.5) * 5;
-  const m2100 = magnitude(result.samples, ansamStart + 0.25, 0.35, 2100);
-  const m420 = magnitude(result.samples, ansamStart + 0.25, 0.35, 420);
-  assert.ok(m2100 > m420 * 10, `2100=${m2100} 420=${m420}`);
-
-  const wav = encodeWav16Bit(result.samples, SAMPLE_RATE);
-  assert.equal(String.fromCharCode(...wav.slice(0, 4)), 'RIFF');
+  for (const sample of result.samples) {
+    assert.ok(Number.isFinite(sample));
+    peak = Math.max(peak, Math.abs(sample));
+  }
+  assert.ok(peak <= 0.91, String(peak));
 });
